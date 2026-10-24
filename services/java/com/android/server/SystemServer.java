@@ -127,6 +127,7 @@ import com.android.server.adb.AdbService;
 import com.android.server.aiseal.AiSealSystemService;
 import com.android.server.alarm.AlarmManagerService;
 import com.android.server.allowlist.AllowlistService;
+import com.android.server.spoof.SpoofServiceFactory;
 import com.android.server.am.ActivityManagerService;
 import com.android.server.ambientcontext.AmbientContextManagerService;
 import com.android.server.app.GameManagerService;
@@ -1008,6 +1009,8 @@ public final class SystemServer implements Dumpable {
 
             LocalServices.addService(SystemServiceManager.class, mSystemServiceManager);
 
+            SpoofServiceFactory.init(mSystemContext);
+
             // Lazily load the pre-installed system font map in SystemServer only if we're not doing
             // the optimized font loading in the FontManagerService.
             if (!com.android.text.flags.Flags.useOptimizedBoottimeFontLoading()
@@ -1437,6 +1440,14 @@ public final class SystemServer implements Dumpable {
         // Manages Overlay packages
         t.traceBegin("StartOverlayManagerService");
         mSystemServiceManager.startService(new OverlayManagerService(mSystemContext));
+        t.traceEnd();
+
+        t.traceBegin("InitVBMetaDigest");
+        try {
+            android.security.trickystore.AttestationUtils.initBootHash();
+        } catch (Throwable e) {
+            Slog.e(TAG, "Failed to initialize VBMetaDigest boot hash", e);
+        }
         t.traceEnd();
 
         // Manages Resources packages

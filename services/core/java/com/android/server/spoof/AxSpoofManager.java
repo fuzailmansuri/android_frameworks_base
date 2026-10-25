@@ -196,6 +196,8 @@ public class AxSpoofManager implements IAxSpoofManager {
                 refreshKey(last);
                 if (Settings.Secure.SPOOF_PIF_CONFIG.equals(last)) {
                     onPifConfigChanged();
+                } else if (Settings.Secure.SPOOF_TRICKYSTORE_KEYBOX.equals(last)) {
+                    onKeyboxChanged();
                 } else if (Settings.Secure.SPOOF_REFRESH_TRIGGER.equals(last)) {
                     mHandler.post(() -> refreshNow(true));
                 }
@@ -341,6 +343,22 @@ public class AxSpoofManager implements IAxSpoofManager {
         mHandler.postDelayed(mRefreshAfterClear, REFRESH_AFTER_CLEAR_DELAY_MS);
     }
 
+    private void onKeyboxChanged() {
+        final String pifConfig = getCached(Settings.Secure.SPOOF_PIF_CONFIG);
+        if (pifConfig == null || pifConfig.trim().isEmpty()) return;
+        try {
+            JSONObject json = new JSONObject(pifConfig);
+            boolean hasKeybox = !isEmpty(getCached(Settings.Secure.SPOOF_TRICKYSTORE_KEYBOX))
+                    || new File("/system/etc/security/keybox.xml").exists();
+            json.put("spoofProvider", hasKeybox ? "false" : "true");
+            Settings.Secure.putStringForUser(
+                    mResolver, Settings.Secure.SPOOF_PIF_CONFIG, json.toString(2), UserHandle.USER_SYSTEM);
+            Log.i(TAG, "Updated spoofProvider=" + (hasKeybox ? "false" : "true") + " on keybox state change");
+        } catch (Exception e) {
+            Log.w(TAG, "Failed to update spoofProvider on keybox change", e);
+        }
+    }
+
     /**
      * Empties the staged PIF props. A property can't be deleted once set,
      * but bionic's custom_rom_hide_get_prop_override() only applies a staging
@@ -395,6 +413,10 @@ public class AxSpoofManager implements IAxSpoofManager {
                 json.put("FINGERPRINT", profile.fingerprint);
                 json.put("SECURITY_PATCH", profile.securityPatch);
                 json.put("DEVICE_INITIAL_SDK_INT", PIF_DEVICE_INITIAL_SDK);
+                boolean hasKeybox = !isEmpty(Settings.Secure.getStringForUser(
+                        mResolver, Settings.Secure.SPOOF_TRICKYSTORE_KEYBOX, UserHandle.USER_SYSTEM))
+                        || new File("/system/etc/security/keybox.xml").exists();
+                json.put("spoofProvider", hasKeybox ? "false" : "true");
                 json.put("manually_imported", false);
                 if (profile.isCanary) {
                     String canaryMonth = profile.securityPatch != null && profile.securityPatch.length() >= 7
@@ -620,6 +642,10 @@ public class AxSpoofManager implements IAxSpoofManager {
         toSave.put("FINGERPRINT", matched.fingerprint);
         toSave.put("SECURITY_PATCH", matched.securityPatch);
         toSave.put("DEVICE_INITIAL_SDK_INT", PIF_DEVICE_INITIAL_SDK);
+        boolean hasKeybox = !isEmpty(Settings.Secure.getStringForUser(
+                mResolver, Settings.Secure.SPOOF_TRICKYSTORE_KEYBOX, UserHandle.USER_SYSTEM))
+                || new File("/system/etc/security/keybox.xml").exists();
+        toSave.put("spoofProvider", hasKeybox ? "false" : "true");
         toSave.put("manually_imported", false);
         // Same canary metadata Evolver writes, so the refetch window above can
         // work out how long this fingerprint has left instead of always seeing

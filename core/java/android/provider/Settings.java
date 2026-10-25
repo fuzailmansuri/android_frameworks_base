@@ -14352,6 +14352,11 @@ public final class Settings {
          * @hide
          */
         public static final String SPOOF_TRICKYSTORE_PATCH = "spoof_trickystore_patch";
+
+        /**
+         * @hide
+         */
+        public static final String SPOOF_REFRESH_TRIGGER = "spoof_refresh_trigger";
     }
 
     /**

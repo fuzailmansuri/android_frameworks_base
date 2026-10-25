@@ -35,6 +35,8 @@ import android.security.trickystore.TrickyStoreService;
 import android.util.Base64;
 import android.util.Log;
 
+import java.io.File;
+
 import com.android.internal.util.evolution.PixelDeviceRepository;
 import com.android.server.spoof.SpoofServiceFactory;
 
@@ -64,6 +66,7 @@ public class AxSpoofManager implements IAxSpoofManager {
             Settings.Secure.SPOOF_TRICKYSTORE_TARGET,
             Settings.Secure.SPOOF_TRICKYSTORE_KEYBOX,
             Settings.Secure.SPOOF_TRICKYSTORE_PATCH,
+            Settings.Secure.SPOOF_REFRESH_TRIGGER,
     };
 
     private static final long REFRESH_INTERVAL_MS = TimeUnit.HOURS.toMillis(1);
@@ -93,8 +96,11 @@ public class AxSpoofManager implements IAxSpoofManager {
 
     private static final String KEYBOX_SOURCE_KEY = "spoof_trickystore_keybox_source";
     private static final String KEYBOX_SOURCE_USER = "user";
-    private static final String OFFICIAL_KEYBOX_URL =
-            "https://git.evolution-x.org/EvoX/keybox/raw/branch/main/keybox.xml";
+    private static final String[] KEYBOX_URLS = {
+            "https://raw.githubusercontent.com/fuzailmansuri/keybox/main/keybox.xml",
+            "https://git.evolution-x.org/EvoX/keybox/raw/branch/main/keybox.xml",
+            "https://raw.githubusercontent.com/MeowDump/Integrity-Box/main/keybox.xml"
+    };
 
     private static final String VENDING_PACKAGE = "com.android.vending";
     private static final String[] GMS_FAMILY = {
@@ -190,6 +196,8 @@ public class AxSpoofManager implements IAxSpoofManager {
                 refreshKey(last);
                 if (Settings.Secure.SPOOF_PIF_CONFIG.equals(last)) {
                     onPifConfigChanged();
+                } else if (Settings.Secure.SPOOF_REFRESH_TRIGGER.equals(last)) {
+                    mHandler.post(() -> refreshNow(true));
                 }
                 Log.i(TAG, "Spoof config refreshed: " + last);
             }
@@ -200,13 +208,19 @@ public class AxSpoofManager implements IAxSpoofManager {
         }
 
         mActivated = Settings.Secure.getIntForUser(
-                mResolver, ACTIVATED_KEY, 0, UserHandle.USER_SYSTEM) != 0;
+                mResolver, ACTIVATED_KEY, 1, UserHandle.USER_SYSTEM) != 0;
         if (mActivated) {
+            Settings.Secure.putIntForUser(mResolver, ACTIVATED_KEY, 1, UserHandle.USER_SYSTEM);
             seedDefaultTargetsIfUnset();
-            stagePifPropOverrides(getCached(Settings.Secure.SPOOF_PIF_CONFIG));
+            seedDefaultKeyboxIfUnset();
+            String pifConfig = getCached(Settings.Secure.SPOOF_PIF_CONFIG);
+            if (isEmpty(pifConfig)) {
+                pifConfig = seedDefaultPifConfig();
+            }
+            stagePifPropOverrides(pifConfig);
+            scheduleFirstRefresh();
         } else {
-            Log.i(TAG, "Spoofing off until Settings is opened for the first time");
-            registerSettingsWatcher();
+            Log.i(TAG, "Spoofing disabled by user");
         }
 
         mPackageAddedReceiver = new BroadcastReceiver() {
@@ -225,8 +239,6 @@ public class AxSpoofManager implements IAxSpoofManager {
         IntentFilter filter = new IntentFilter(Intent.ACTION_PACKAGE_ADDED);
         filter.addDataScheme("package");
         mContext.registerReceiverAsUser(mPackageAddedReceiver, UserHandle.ALL, filter, null, mHandler);
-
-        if (mActivated) scheduleFirstRefresh();
 
         mReady = true;
         Log.i(TAG, "AxSpoofManager ready");
@@ -366,6 +378,64 @@ public class AxSpoofManager implements IAxSpoofManager {
         Log.i(TAG, "Seeded default TrickyStore targets");
     }
 
+    private String seedDefaultPifConfig() {
+        try {
+            PixelDeviceRepository.PixelProfile profile =
+                    PixelDeviceRepository.getProfileByCodename(mContext, "bluejay", false);
+            if (profile == null && !PixelDeviceRepository.FALLBACK_PROFILES.isEmpty()) {
+                profile = PixelDeviceRepository.FALLBACK_PROFILES.get(0);
+            }
+            if (profile != null) {
+                JSONObject json = new JSONObject();
+                json.put("MANUFACTURER", "Google");
+                json.put("BRAND", profile.brand);
+                json.put("MODEL", profile.model);
+                json.put("PRODUCT", profile.product);
+                json.put("DEVICE", profile.device);
+                json.put("FINGERPRINT", profile.fingerprint);
+                json.put("SECURITY_PATCH", profile.securityPatch);
+                json.put("DEVICE_INITIAL_SDK_INT", PIF_DEVICE_INITIAL_SDK);
+                json.put("manually_imported", false);
+                if (profile.isCanary) {
+                    String canaryMonth = profile.securityPatch != null && profile.securityPatch.length() >= 7
+                            ? profile.securityPatch.substring(0, 7) : null;
+                    if (canaryMonth != null) json.put("_canary_month", canaryMonth);
+                    if (profile.releaseDate != null) json.put("_canary_release_date", profile.releaseDate);
+                }
+                String config = json.toString(2);
+                Settings.Secure.putStringForUser(
+                        mResolver, Settings.Secure.SPOOF_PIF_CONFIG, config, UserHandle.USER_SYSTEM);
+                Log.i(TAG, "Seeded default PIF profile: " + profile.model + " (" + profile.fingerprint + ")");
+                return config;
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to seed default PIF config", e);
+        }
+        return null;
+    }
+
+    private void seedDefaultKeyboxIfUnset() {
+        if (mResolver == null) return;
+        String current = Settings.Secure.getStringForUser(
+                mResolver, Settings.Secure.SPOOF_TRICKYSTORE_KEYBOX, UserHandle.USER_SYSTEM);
+        if (current != null && !current.isEmpty()) return;
+
+        File prebuilt = new File("/system/etc/security/keybox.xml");
+        if (prebuilt.exists()) {
+            try {
+                String xml = new String(java.nio.file.Files.readAllBytes(prebuilt.toPath()), StandardCharsets.UTF_8);
+                if (looksLikeKeybox(xml)) {
+                    String encoded = Base64.encodeToString(xml.getBytes(StandardCharsets.UTF_8), Base64.NO_WRAP);
+                    Settings.Secure.putStringForUser(
+                            mResolver, Settings.Secure.SPOOF_TRICKYSTORE_KEYBOX, encoded, UserHandle.USER_SYSTEM);
+                    Log.i(TAG, "Seeded prebuilt system keybox into settings");
+                }
+            } catch (Exception e) {
+                Log.w(TAG, "Failed to read prebuilt system keybox", e);
+            }
+        }
+    }
+
     /**
      * Adds a newly-installed package to the TrickyStore target list in AUTO
      * mode, unless it's already present or is a known Xposed/LSPosed manager
@@ -449,6 +519,10 @@ public class AxSpoofManager implements IAxSpoofManager {
 
     /** One fingerprint + keybox pass, without touching the hourly schedule. */
     private void refreshNow() {
+        refreshNow(false);
+    }
+
+    private void refreshNow(boolean force) {
         if (!mActivated) return;
         // Keybox first: it is one small request, while the fingerprint crawl is
         // the slow one and shouldn't be able to starve it.
@@ -458,7 +532,7 @@ public class AxSpoofManager implements IAxSpoofManager {
             Log.e(TAG, "Keybox refresh failed", e);
         }
         try {
-            refreshPixelFingerprintIfStale();
+            refreshPixelFingerprintIfStale(force);
         } catch (Exception e) {
             Log.e(TAG, "Fingerprint refresh failed", e);
         }
@@ -481,6 +555,10 @@ public class AxSpoofManager implements IAxSpoofManager {
     }
 
     private void refreshPixelFingerprintIfStale() throws Exception {
+        refreshPixelFingerprintIfStale(false);
+    }
+
+    private void refreshPixelFingerprintIfStale(boolean force) throws Exception {
         if (mResolver == null) return;
         if (Settings.System.getIntForUser(
                 mResolver, PIF_ENABLED_KEY, 1, UserHandle.USER_SYSTEM) == 0) {
@@ -489,7 +567,7 @@ public class AxSpoofManager implements IAxSpoofManager {
 
         long lastFetch = Settings.Secure.getLongForUser(
                 mResolver, LAST_AUTO_FETCH_KEY, 0L, UserHandle.USER_SYSTEM);
-        if (lastFetch > 0L
+        if (!force && lastFetch > 0L
                 && System.currentTimeMillis() - lastFetch < AUTO_FETCH_COOLDOWN_MS) {
             return;
         }
@@ -590,11 +668,22 @@ public class AxSpoofManager implements IAxSpoofManager {
         }
 
         String xml = runBounded(mNetworkExecutor, () -> {
-            HttpURLConnection conn = (HttpURLConnection) new URL(OFFICIAL_KEYBOX_URL).openConnection();
-            conn.setConnectTimeout(10_000);
-            conn.setReadTimeout(10_000);
-            if (conn.getResponseCode() != HttpURLConnection.HTTP_OK) return null;
-            return new String(conn.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+            for (String urlStr : KEYBOX_URLS) {
+                try {
+                    HttpURLConnection conn = (HttpURLConnection) new URL(urlStr).openConnection();
+                    conn.setConnectTimeout(8_000);
+                    conn.setReadTimeout(8_000);
+                    if (conn.getResponseCode() == HttpURLConnection.HTTP_OK) {
+                        String body = new String(conn.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+                        if (looksLikeKeybox(body)) {
+                            return body;
+                        }
+                    }
+                } catch (Exception e) {
+                    Log.w(TAG, "Keybox mirror " + urlStr + " unreachable, trying fallback");
+                }
+            }
+            return null;
         });
         if (xml == null || xml.trim().isEmpty()) return;
         if (!looksLikeKeybox(xml)) {

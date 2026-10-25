@@ -261,6 +261,14 @@ public class TrickyStoreService {
     public void refreshKeyBox() {
         String raw = fetchFromAms(am -> am.getSpoofTrickyStoreKeyBox());
         if (raw == null || raw.isEmpty()) {
+            java.io.File prebuilt = new java.io.File("/system/etc/security/keybox.xml");
+            if (prebuilt.exists()) {
+                try {
+                    raw = new String(java.nio.file.Files.readAllBytes(prebuilt.toPath()), StandardCharsets.UTF_8);
+                } catch (Exception ignored) {}
+            }
+        }
+        if (raw == null || raw.isEmpty()) {
             mKeyBoxManager.clear();
             mLastKeyboxFingerprint = null;
             return;

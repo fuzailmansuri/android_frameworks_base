@@ -24,6 +24,7 @@ import static com.android.server.pm.AppsFilterUtils.requestsQueryAllPackages;
 
 import android.annotation.NonNull;
 import android.annotation.Nullable;
+import android.content.ComponentName;
 import android.content.pm.SigningDetails;
 import android.os.Binder;
 import android.os.Handler;
@@ -33,8 +34,11 @@ import android.os.UserHandle;
 import android.text.TextUtils;
 import android.util.ArrayMap;
 import android.util.ArraySet;
+import android.util.Pair;
 import android.util.Slog;
 import android.util.SparseArray;
+
+import java.util.Set;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.function.QuadFunction;
@@ -322,6 +326,138 @@ public abstract class AppsFilterBase implements AppsFilterSnapshot {
         return targetUid == Process.getAppUidForSdkSandboxUid(callingUid);
     }
 
+    private static final String PACKAGE_SYSTEMUI = "com.android.systemui";
+
+    private static final Set<String> ROOT_PACKAGES = Set.of(
+            "com.topjohnwu.magisk",
+            "eu.chainfire.supersu",
+            "com.koushikdutta.superuser",
+            "com.noshufou.android.su",
+            "com.noshufou.android.su.elite",
+            "com.thirdparty.superuser",
+            "com.yellowes.su",
+            "me.weishu.kernelsu",
+            "com.kingroot.kinguser",
+            "com.kingo.root",
+            "com.smedialink.oneclickroot",
+            "com.zhiqupk.root.global",
+            "com.alephzain.framaroot",
+            "com.devadvance.rootcloak",
+            "com.devadvance.rootcloakplus",
+            "de.robv.android.xposed.installer",
+            "com.saurik.substrate",
+            "com.amphoras.hidemyroot",
+            "com.amphoras.hidemyrootadfree",
+            "com.formyhm.hiderootPremium",
+            "com.formyhm.hideroot",
+            "com.koushikdutta.rommanager",
+            "com.koushikdutta.rommanager.license",
+            "com.dimonvideo.luckypatcher",
+            "com.chelpus.lackypatch",
+            "com.chelpus.luckypatcher",
+            "com.solohsu.android.edxp.manager",
+            "org.meowcat.edxposed.manager",
+            "org.lsposed.manager",
+            "cc.madkite.freedom",
+            "com.ramdroid.appquarantine",
+            "com.ramdroid.appquarantinepro",
+            "com.zachspong.temprootremovejb"
+    );
+
+    private static final Set<String> ROM_PACKAGES_EXACT = Set.of(
+            "lineageos.platform"
+    );
+
+    private static boolean isRomPackage(@NonNull String packageName) {
+        return packageName.startsWith("org.lineageos.")
+                || packageName.startsWith("com.libremobileos.")
+                || packageName.startsWith("com.evolution.")
+                || packageName.startsWith("com.crdroid.")
+                || packageName.startsWith("com.dirtyunicorns.")
+                || packageName.startsWith("com.resurrectionremix.")
+                || packageName.startsWith("com.paranoid.")
+                || packageName.startsWith("com.aospa.")
+                || packageName.startsWith("org.calyxos.")
+                || packageName.startsWith("org.protonaosp.");
+    }
+
+    public static boolean isHiddenPackage(@Nullable String packageName) {
+        return packageName != null
+                && (ROOT_PACKAGES.contains(packageName)
+                        || ROM_PACKAGES_EXACT.contains(packageName)
+                        || isRomPackage(packageName));
+    }
+
+    public static boolean shouldHideFromUid(@NonNull Computer snapshot, int callingUid,
+            @Nullable String targetPackageName) {
+        if (!isHiddenPackage(targetPackageName)) {
+            return false;
+        }
+        final int callingAppId = UserHandle.getAppId(callingUid);
+        if (callingAppId < Process.FIRST_APPLICATION_UID) {
+            return false;
+        }
+        final Pair<PackageStateInternal, SharedUserApi> p =
+                snapshot.getPackageOrSharedUser(callingAppId);
+        final Object callingSetting = p == null ? null
+                : (p.first != null ? p.first : p.second);
+        return !canAccessHiddenPackages(snapshot, callingUid, callingSetting);
+    }
+
+    private static boolean canAccessHiddenPackages(@NonNull Computer snapshot, int callingUid,
+            @Nullable Object callingSetting) {
+        final int callingAppId = UserHandle.getAppId(callingUid);
+        if (callingAppId < Process.FIRST_APPLICATION_UID) {
+            return true;
+        }
+        if (callingSetting == null) {
+            return false;
+        }
+        final int userId = UserHandle.getUserId(callingUid);
+        if (callingSetting instanceof PackageStateInternal) {
+            final PackageStateInternal ps = (PackageStateInternal) callingSetting;
+            if (isPackagePrivileged(ps, snapshot, userId)) {
+                return true;
+            }
+            if (!ps.hasSharedUser()) {
+                return false;
+            }
+            final SharedUserApi sharedUser = snapshot.getSharedUser(ps.getSharedUserAppId());
+            return sharedUser != null && isSharedUserPrivileged(sharedUser, snapshot, userId);
+        }
+        if (callingSetting instanceof SharedUserApi) {
+            return isSharedUserPrivileged((SharedUserApi) callingSetting, snapshot, userId);
+        }
+        return false;
+    }
+
+    private static boolean isPackagePrivileged(@NonNull PackageStateInternal ps,
+            @NonNull Computer snapshot, int userId) {
+        if (ps.isSystem()
+                || ps.isPrivileged()
+                || ps.isUpdatedSystemApp()
+                || PACKAGE_SYSTEMUI.equals(ps.getPackageName())) {
+            return true;
+        }
+        final ComponentName defaultHome = snapshot.getDefaultHomeActivity(userId);
+        return defaultHome != null && defaultHome.getPackageName().equals(ps.getPackageName());
+    }
+
+    private static boolean isSharedUserPrivileged(@NonNull SharedUserApi sharedUser,
+            @NonNull Computer snapshot, int userId) {
+        if (sharedUser.isPrivileged() || sharedUser.getName().startsWith("android.uid.")) {
+            return true;
+        }
+        final ArraySet<? extends PackageStateInternal> packageStates =
+                sharedUser.getPackageStates();
+        for (int i = packageStates.size() - 1; i >= 0; i--) {
+            if (isPackagePrivileged(packageStates.valueAt(i), snapshot, userId)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /**
      * See
      * {@link AppsFilterSnapshot#shouldFilterApplication(PackageDataSnapshot, int, Object,
@@ -334,13 +470,21 @@ public abstract class AppsFilterBase implements AppsFilterSnapshot {
             Trace.traceBegin(TRACE_TAG_PACKAGE_MANAGER, "shouldFilterApplication");
         }
         try {
-            int callingAppId = UserHandle.getAppId(callingUid);
-            if (callingAppId < Process.FIRST_APPLICATION_UID
-                    || targetPkgSetting.getAppId() < Process.FIRST_APPLICATION_UID
-                    || callingAppId == targetPkgSetting.getAppId()) {
+            final int callingAppId = UserHandle.getAppId(callingUid);
+            final int targetAppId = targetPkgSetting.getAppId();
+            if (callingAppId < Process.FIRST_APPLICATION_UID || callingAppId == targetAppId) {
+                return false;
+            }
+            if (snapshot instanceof Computer) {
+                final Computer computer = (Computer) snapshot;
+                if (isHiddenPackage(targetPkgSetting.getPackageName())
+                        && !canAccessHiddenPackages(computer, callingUid, callingSetting)) {
+                    return true;
+                }
+            }
+            if (targetAppId < Process.FIRST_APPLICATION_UID) {
                 return false;
             } else if (Process.isSdkSandboxUid(callingAppId)) {
-                final int targetAppId = targetPkgSetting.getAppId();
                 final int targetUid = UserHandle.getUid(userId, targetAppId);
                 // we only allow sdk sandbox processes access to forcequeryable packages or
                 // if the target app is the sandbox's client app

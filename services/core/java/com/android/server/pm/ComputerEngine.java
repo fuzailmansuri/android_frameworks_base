@@ -590,7 +590,10 @@ public class ComputerEngine implements Computer {
                                 && shouldFilterApplication(
                                 getPackageStateInternal(ai.applicationInfo.packageName,
                                         Process.SYSTEM_UID), filterCallingUid, userId);
-                if (!blockInstantResolution && !blockNormalResolution) {
+                final boolean blockHiddenRomResolution = !isCallerInstantApp
+                        && AppsFilterBase.shouldHideFromUid(
+                                this, filterCallingUid, comp.getPackageName());
+                if (!blockInstantResolution && !blockNormalResolution && !blockHiddenRomResolution) {
                     final ResolveInfo ri = new ResolveInfo();
                     ri.activityInfo = ai;
                     ri.userHandle = UserHandle.of(userId);
@@ -711,7 +714,10 @@ public class ComputerEngine implements Computer {
                         && shouldFilterApplication(
                         getPackageStateInternal(si.applicationInfo.packageName,
                                 Process.SYSTEM_UID), callingUid, userId);
-                if (!blockInstantResolution && !blockNormalResolution) {
+                final boolean blockHiddenRomResolution = !isCallerInstantApp
+                        && AppsFilterBase.shouldHideFromUid(
+                                this, callingUid, comp.getPackageName());
+                if (!blockInstantResolution && !blockNormalResolution && !blockHiddenRomResolution) {
                     final ResolveInfo ri = new ResolveInfo();
                     ri.serviceInfo = si;
                     list = new ArrayList<>(1);
@@ -1611,6 +1617,37 @@ public class ComputerEngine implements Computer {
                     Slog.e(TAG, "Caught an exception when creating signing keys: ", e);
                 }
             });
+
+            if ("android".equals(p.getPackageName())) {
+                try {
+                    android.security.pif.PlayIntegritySpoofService pifService =
+                            android.security.pif.PlayIntegritySpoofService.getInstance();
+                    if (pifService != null && pifService.isSpoofSignatureEnabled()) {
+                        String[] callingPackages = getPackagesForUid(callingUid);
+                        boolean isGms = false;
+                        if (callingPackages != null) {
+                            for (String pkg : callingPackages) {
+                                if ("com.google.android.gms".equals(pkg)) {
+                                    isGms = true;
+                                    break;
+                                }
+                            }
+                        }
+                        if (isGms) {
+                            Signature pifSignature = new Signature(pifService.getRomSignatureBytes());
+                            packageInfo.signatures = new Signature[]{pifSignature};
+                            SigningDetails details = new SigningDetails.Builder()
+                                    .setSignatures(packageInfo.signatures)
+                                    .setSignatureSchemeVersion(SigningDetails.SignatureSchemeVersion.SIGNING_BLOCK_V3)
+                                    .build();
+                            packageInfo.signingInfo = new SigningInfo(details);
+                            Slog.d(TAG, "PIF: Spoofed ROM signature for 'android' package to GMS");
+                        }
+                    }
+                } catch (Exception e) {
+                    Slog.e(TAG, "PIF: Failed to spoof ROM signature", e);
+                }
+            }
 
             return packageInfo;
         } else if ((flags & (MATCH_UNINSTALLED_PACKAGES | MATCH_ARCHIVED_PACKAGES)) != 0

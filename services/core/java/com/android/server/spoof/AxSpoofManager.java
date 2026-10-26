@@ -97,6 +97,8 @@ public class AxSpoofManager implements IAxSpoofManager {
     private static final String KEYBOX_SOURCE_KEY = "spoof_trickystore_keybox_source";
     private static final String KEYBOX_SOURCE_USER = "user";
     private static final String[] KEYBOX_URLS = {
+            "https://keybox.kowx712.cc/keybox.xml",
+            "https://keybox.kowx712.cc/",
             "https://raw.githubusercontent.com/fuzailmansuri/keybox/main/keybox.xml",
             "https://git.evolution-x.org/EvoX/keybox/raw/branch/main/keybox.xml",
             "https://raw.githubusercontent.com/MeowDump/Integrity-Box/main/keybox.xml"
@@ -141,9 +143,43 @@ public class AxSpoofManager implements IAxSpoofManager {
     private static final int PIF_CUSTOM_SLOT_MAX = 32;
     private static final int PROP_VALUE_MAX_CHARS = 91;
 
-    // DEVICE_INITIAL_SDK_INT written into the PIF config by the auto-refresh. The
-    // api_level staging prop is read back from the config, so they can't drift.
-    private static final String PIF_DEVICE_INITIAL_SDK = "32";
+    /** Resolves first API level per device codename matching PlayIntegrityFix autopif rules. */
+    private static String getInitialSdkForDevice(String codename) {
+        if (codename == null) return "32";
+        switch (codename.toLowerCase()) {
+            case "bluejay":
+                return "32"; // Pixel 6a
+            case "panther":
+            case "cheetah":
+            case "lynx":
+            case "felix":
+            case "tangorpro":
+                return "33"; // Pixel 7 Series / Fold / Tablet
+            case "shiba":
+            case "husky":
+            case "akita":
+            case "tokay":
+            case "caiman":
+            case "komodo":
+            case "comet":
+                return "34"; // Pixel 8 Series / Pixel 9 Series
+            case "tegu":
+            case "stallion":
+                return "35"; // Pixel 9a / 10a
+            case "frankel":
+            case "blazer":
+            case "mustang":
+            case "rango":
+                return "36"; // Pixel 10 Series
+            case "cubs":
+            case "grizzly":
+            case "kodiak":
+            case "yogi":
+                return "37"; // Pixel 11 Series
+            default:
+                return "32";
+        }
+    }
 
     // Keybox and fingerprint work get their own executor: the fingerprint crawl
     // is many sequential requests, and a stuck one (cancel() can't interrupt
@@ -398,8 +434,14 @@ public class AxSpoofManager implements IAxSpoofManager {
 
     private String seedDefaultPifConfig() {
         try {
+            List<PixelDeviceRepository.PixelProfile> profiles =
+                    PixelDeviceRepository.getProfiles(mContext, false);
+            String codename = PixelDeviceRepository.getDefaultPifCodename(profiles);
             PixelDeviceRepository.PixelProfile profile =
-                    PixelDeviceRepository.getProfileByCodename(mContext, "bluejay", false);
+                    PixelDeviceRepository.getProfileByCodename(mContext, codename, false);
+            if (profile == null && !profiles.isEmpty()) {
+                profile = profiles.get(0);
+            }
             if (profile == null && !PixelDeviceRepository.FALLBACK_PROFILES.isEmpty()) {
                 profile = PixelDeviceRepository.FALLBACK_PROFILES.get(0);
             }
@@ -412,7 +454,7 @@ public class AxSpoofManager implements IAxSpoofManager {
                 json.put("DEVICE", profile.device);
                 json.put("FINGERPRINT", profile.fingerprint);
                 json.put("SECURITY_PATCH", profile.securityPatch);
-                json.put("DEVICE_INITIAL_SDK_INT", PIF_DEVICE_INITIAL_SDK);
+                json.put("DEVICE_INITIAL_SDK_INT", getInitialSdkForDevice(profile.codename));
                 boolean hasKeybox = !isEmpty(Settings.Secure.getStringForUser(
                         mResolver, Settings.Secure.SPOOF_TRICKYSTORE_KEYBOX, UserHandle.USER_SYSTEM))
                         || new File("/system/etc/security/keybox.xml").exists();
@@ -641,7 +683,7 @@ public class AxSpoofManager implements IAxSpoofManager {
         toSave.put("DEVICE", matched.device);
         toSave.put("FINGERPRINT", matched.fingerprint);
         toSave.put("SECURITY_PATCH", matched.securityPatch);
-        toSave.put("DEVICE_INITIAL_SDK_INT", PIF_DEVICE_INITIAL_SDK);
+        toSave.put("DEVICE_INITIAL_SDK_INT", getInitialSdkForDevice(matched.codename));
         boolean hasKeybox = !isEmpty(Settings.Secure.getStringForUser(
                 mResolver, Settings.Secure.SPOOF_TRICKYSTORE_KEYBOX, UserHandle.USER_SYSTEM))
                 || new File("/system/etc/security/keybox.xml").exists();
